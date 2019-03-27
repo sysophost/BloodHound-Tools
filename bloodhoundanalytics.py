@@ -9,6 +9,7 @@ from timeit import default_timer as timer
 # Andy Robbins - @_wald0
 # Rohan Vazarkar - @CptJesus
 # https://www.specterops.io
+
 # License: GPLv3
 
 
@@ -51,10 +52,9 @@ class FrontPage(object):
         sheet.cell(row, column, value=text)
 
     def do_front_page_analysis(self):
-        func_list = [self.create_node_statistics,
-                     self.create_edge_statistics,
-                     self.create_qa_statistics,
-                     self.create_highvalue_list]
+        func_list = [self.create_node_statistics, self.create_highvalue_list,
+                     self.create_edge_statistics, self.create_qa_statistics,
+                     ]
         sheet = self.workbook._sheets[0]
         self.write_single_cell(sheet, 1, 1, "Node Statistics")
         self.write_single_cell(sheet, 1, 2, "Edge Statistics")
@@ -85,7 +85,7 @@ class FrontPage(object):
 
         for result in session.run("MATCH (n:Domain) RETURN count(n)", domain=self.domain):
             self.write_single_cell(
-                sheet, 5, 1, "Domains in trust: {:,}".format(result[0] - 1))
+                sheet, 5, 1, "Other Domains: {:,}".format(result[0] - 1))
 
         for result in session.run("MATCH (n:GPO) WHERE n.name =~ '.*" + self.domain + "$' RETURN count(n)"):
             self.write_single_cell(
@@ -122,6 +122,10 @@ class FrontPage(object):
 
     def create_qa_statistics(self, sheet):
         session = self.driver.session()
+        computer_local_admin_pct = 0
+        computer_session_pct = 0
+        user_session_pct = 0
+
         query = """MATCH (n)-[:AdminTo]->(c:Computer {domain:{domain}})
                     WITH COUNT(DISTINCT(c)) as computersWithAdminsCount
                     MATCH (c2:Computer {domain:{domain}})
@@ -152,7 +156,7 @@ class FrontPage(object):
                     MATCH (g:Group {domain: {domain}})
                     WHERE g.objectsid ENDS WITH '-512'
                     WITH g, COUNT(u) as userCount
-                    MATCH p = shortestPath((u:User)-[*1..]->(g))
+                    MATCH p = shortestPath((u:User {domain: {domain}})-[*1..]->(g))
                     RETURN toint(100.0 * COUNT(u) / userCount)
                     """
 
@@ -163,7 +167,7 @@ class FrontPage(object):
                     MATCH (g:Group {domain: {domain}})
                     WHERE g.objectsid ENDS WITH '-512'
                     WITH g, COUNT(c) as ComputerCount
-                    MATCH p = shortestPath((c:Computer)-[*1..]->(g))
+                    MATCH p = shortestPath((c:Computer {domain: {domain}})-[*1..]->(g))
                     RETURN toint(100.0 * COUNT(c) / ComputerCount)
                     """
 
@@ -183,7 +187,7 @@ class FrontPage(object):
             sheet, 6, 3, "Computers with attack path to Domain Admin: {}%".format(Computers_to_da))
 
     def create_highvalue_list(self, sheet):
-        list_query = """MATCH (n {highvalue: True})
+        list_query = """MATCH (n {highvalue: True,domain: {domain}})
                             RETURN DISTINCT n.name
                             ORDER BY n.name ASC
                             """
@@ -194,8 +198,7 @@ class FrontPage(object):
             results.append(result[0])
 
         session.close()
-        self.write_column_data(
-            sheet, "High Value List: {}", results)
+        self.write_column_data(sheet, "High Value List: {}", results)
 
 
 class LowHangingFruit(object):
@@ -473,7 +476,7 @@ class LowHangingFruit(object):
 
         session.close()
         self.write_column_data(
-            sheet, "Everyone with DCOM Rights: {}", results)
+            sheet, "Domain Users with DCOM Rights: {}", results)
 
     def authenticated_users_dcom(self, sheet):
 
@@ -494,7 +497,7 @@ class LowHangingFruit(object):
 
         session.close()
         self.write_column_data(
-            sheet, "Authenticated Users with DCOM Rights: {}", results)
+            sheet, "Domain Users with DCOM Rights: {}", results)
 
     def shortest_acl_path_domain_users(self, sheet):
         count_query = """MATCH (g1:Group {domain:{domain}})
@@ -788,21 +791,6 @@ class CriticalAssets(object):
             f(sheet)
             print "{} completed in {}s".format(f.__name__, timer() - s)
 
-    def acl_domain(self, sheet):
-        list_query = """MATCH (n)-[r]->(u:Domain {name: {domain}})
-                            WHERE r.isacl=true
-                            RETURN DISTINCT  n.name
-                            """
-        session = self.driver.session()
-        results = []
-
-        for result in session.run(list_query, domain=self.domain):
-            results.append(result[0])
-
-        session.close()
-        self.write_column_data(
-            sheet, "Explicit ACL privileges on domain: {}", results)
-
     def admins_on_dc(self, sheet):
         list_query = """MATCH (g:Group {domain:{domain}})
                     WHERE g.objectsid ENDS WITH "-516"
@@ -833,6 +821,7 @@ class CriticalAssets(object):
                     OPTIONAL MATCH (n)-[:CanRDP]->(c)
                     OPTIONAL MATCH (m)-[:MemberOf*1..]->(:Group)-[:CanRDP]->(c)
                     WHERE (n:User OR n:Computer) AND (m:User OR m:Computer)
+
                     WITH COLLECT(n) + COLLECT(m) as tempVar1
                     UNWIND tempVar1 as tempVar2
                     WITH DISTINCT(tempVar2) as tempVar3
@@ -1082,6 +1071,21 @@ class CriticalAssets(object):
         self.write_column_data(
             sheet, "High Value User GPO Controllers: {}", results)
 
+    def acl_domain(self, sheet):
+        list_query = """MATCH (n)-[r]->(u:Domain {name: {domain}})
+                            WHERE r.isacl=true
+                            RETURN DISTINCT  n.name
+                            """
+        session = self.driver.session()
+        results = []
+
+        for result in session.run(list_query, domain=self.domain):
+            results.append(result[0])
+
+        session.close()
+        self.write_column_data(
+            sheet, "Explicit ACL privileges on domain: {}", results)
+
 
 class CrossDomain(object):
     def __init__(self, driver, domain, workbook):
@@ -1163,21 +1167,21 @@ class CrossDomain(object):
 
     def foreign_user_controllers(self, sheet):
         list_query = """MATCH (g:Group {domain:{domain}})
-                            OPTIONAL MATCH (n)-[{isacl:true}]->(g)
-                            WHERE (n:User OR n:Computer) AND NOT n.domain = g.domain
-                            OPTIONAL MATCH (m)-[:MemberOf*1..]->(:Group)-[{isacl:true}]->(g)
-                            WHERE (m:User OR m:Computer) AND NOT m.domain = g.domain
-                            WITH COLLECT(n) + COLLECT(m) AS tempVar,g
-                            UNWIND tempVar AS foreignGroupControllers
-                            RETURN g.name,COUNT(DISTINCT(foreignGroupControllers))
-                            ORDER BY COUNT(DISTINCT(foreignGroupControllers)) DESC
-                            """
+                        OPTIONAL MATCH (n)-[{isacl:true}]->(g)
+                        WHERE (n:User OR n:Computer) AND NOT n.domain = g.domain
+                        OPTIONAL MATCH (m)-[:MemberOf*1..]->(:Group)-[{isacl:true}]->(g)
+                        WHERE (m:User OR m:Computer) AND NOT m.domain = g.domain
+                        WITH COLLECT(n) + COLLECT(m) AS tempVar,g
+                        UNWIND tempVar AS foreignGroupControllers
+                        RETURN g.name,COUNT(DISTINCT(foreignGroupControllers))
+                        ORDER BY COUNT(DISTINCT(foreignGroupControllers)) DESC
+                        """
 
         session = self.driver.session()
         results = []
 
         for result in session.run(list_query, domain=self.domain):
-            results.append(result[0])
+            results.append("{} - {}".format(result[0], result[1]))
 
         session.close()
         self.write_column_data(
@@ -1235,8 +1239,8 @@ class Privileges(object):
 
     def da_members(self, sheet):
         list_query = """MATCH (n:Group {domain:{domain}})
-                            WHERE n.objectsid =~ "(?i)S-1-5.*-512" WITH n MATCH
-                            (n)<-[r:MemberOf*1..]-(m)
+                            WHERE n.objectsid =~ "(?i)S-1-5.*-512" WITH n
+							MATCH (n)<-[r:MemberOf*1..]-(m)
                             RETURN m.name
                             ORDER BY m.name ASC
                             """
@@ -1427,7 +1431,6 @@ class Kerberos(object):
                         MATCH p = shortestPath((g1)-[r:MemberOf|HasSession|AdminTo|AllExtendedRights|AddMember|ForceChangePassword|GenericAll|GenericWrite|Owns|WriteDacl|WriteOwner|CanRDP|ExecuteDCOM|AllowedToDelegate|ReadLAPSPassword|Contains|GpLink|AddAllowedToAct|AllowedToAct*1..]->(c))
                         RETURN LENGTH(p)
                         """
-
         session = self.driver.session()
         count = 0
         for result in session.run(count_query, domain=self.domain):
@@ -1463,7 +1466,6 @@ class Kerberos(object):
                         MATCH p = shortestPath((g1)-[r:MemberOf|HasSession|AdminTo|AllExtendedRights|AddMember|ForceChangePassword|GenericAll|GenericWrite|Owns|WriteDacl|WriteOwner|CanRDP|ExecuteDCOM|AllowedToDelegate|ReadLAPSPassword|Contains|GpLink|AddAllowedToAct|AllowedToAct*1..]->(c))
                         RETURN LENGTH(p)
                         """
-
         session = self.driver.session()
         count = 0
         for result in session.run(count_query, domain=self.domain):
@@ -1484,10 +1486,11 @@ class MainMenu(cmd.Cmd):
         self.connected = False
         self.num_nodes = 500
         self.filename = "BloodHoundAnalytics.xlsx"
-        try:
-            self.domain = sys.argv[1]
-        except:
-            self.domain = ""
+        if (len(sys.argv) < 2):
+            print "No domain specified."
+            print "Usage: python {} DOMAINNAME".format(sys.argv[0])
+            sys.exit()
+        self.domain = sys.argv[1].upper()
         self.domain_validated = False
 
         cmd.Cmd.__init__(self)
@@ -1504,7 +1507,7 @@ class MainMenu(cmd.Cmd):
             print "No domain specified"
             return
         self.domain_validated = False
-        self.domain = args
+        self.domain = args.upper()
         self.validate_domain()
 
     def cmdloop(self):
@@ -1643,7 +1646,6 @@ class MainMenu(cmd.Cmd):
         for worksheet in self.workbook._sheets:
             for col in worksheet.columns:
                 max_length = 0
-                # column = col[0].column # Get the column name
                 column = get_column_letter(
                     col[0].column)  # Get the column name
                 for cell in col:
